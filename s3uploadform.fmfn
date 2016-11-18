@@ -1,0 +1,131 @@
+/**
+ * =====================================
+ * Upload_Form_Source ( source ; accessKey ; secretKey ; bucket ; expiresTimestamp ; callbackScriptName ; barForegroundColor ; barBackgroundColor )
+ * e.g. Upload_Form_Source ( )
+ * PURPOSE:
+ *    Generate a credentialed s3 upload form
+ *
+ * RETURNS:
+ *    (string) html for functioning form
+ *
+ * PARAMETERS:
+ *    source: the html template code
+ *    accessKey: a valid AWS access key
+ *    secretKey: a valid AWS secret key
+ *    bucket: name of an existing bucket
+ *    expiresTimestamp: a valid FileMaker timestamp value, typically in the future
+ *    callbackScriptName: FM script to call upon successful upload
+ *    barForegroundColor: foreground bar color
+ *    barBackgroundColor: background bar color
+ *
+ *
+ * DEPENDENCIES:
+ *
+ *    PLUGIN: BaseElements
+ *
+ * NOTE:
+ *    Your accessKey identifies your account and it must be associated
+ *    to the root full access of your AWS account or an IAM user with a
+ *    minimum of the AmazonS3ReadOnlyAccess policy associated.
+ *    HTTPS warning: If your bucket name includes periods, the url may
+ *    generate a certificate warning within browsers.
+ *
+ * HISTORY:
+ *    CREATED on 206-10-25 by Andy Walz (andy@cimbura.com)
+ *
+ * REFERENCES:
+ *    https://aws.amazon.com
+ *    http://docs.aws.amazon.com/AmazonS3/latest/dev/RESTAuthentication.html
+ * =====================================
+ */
+
+Let ( [
+    ~region = "us-east-1";
+    ~service = "s3";
+    ~requestType = "aws4_request";
+
+    ~utc = GetAsTimestamp ( Get ( CurrentTimeUTCMilliseconds ) / 1000 );
+    ~utcOffset = Get ( CurrentTimestamp ) - Floor ( Get ( CurrentTimeUTCMilliseconds ) / 1000 );
+
+    ~endpoint = "s3.amazonaws.com";
+    ~expires = If ( IsEmpty ( expiresTimestamp ) ; Get ( CurrentTimestamp ) + ( 3600 * 24 ) ; expiresTimestamp ); // default to +1 day
+
+    ~expiresUTC = GetAsNumber ( ~expires ) - GetAsNumber ( GetAsTimestamp ( Date ( 1 ; 1 ; 1970 ) ) ) - ~utcOffset;
+    ~t = GetAsDate ( ~utc );
+    ~m = Month ( ~t );
+    ~d = Day ( ~t );
+    ~shortDate = Year ( ~t ) & If(~m < 10; "0";"") & ~m & If(~d < 10; "0";"") & ~d;
+    ~creds = accessKey & "/" & ~shortDate & "/" & ~region & "/s3/aws4_request";
+    ~datetime = FormatDateTimeLikePHP ( ~utc  ; "YmdTHisZ" ); //"20161101T171016Z"; // 'Ymd\THis\Z';
+    ~algorithm = "AWS4-HMAC-SHA256";
+
+    // Step 2: Making a Base64 Policy
+    ~policy = Substitute ("{ \"expiration\": \"" & FormatDateTimeLikePHP ( ~expires ; "Y-m-dTg:i:sZ" ) & "\",
+          \"conditions\": [
+{\"bucket\": \"" & bucket & "\" },
+{\"acl\": \"private\" },
+[\"starts-with\", \"$key\", \"\"],
+[\"starts-with\", \"$Content-Type\", \"\"],
+{\"success_action_status\":\"201\" },
+{\"x-amz-credential\": \"" & ~creds & "\" },
+{\"x-amz-algorithm\": \"" & ~algorithm & "\" },
+{\"x-amz-date\": \"" & ~datetime & "\" },
+{\"x-amz-expires\": \"86400\" },
+{\"x-amz-server-side-encryption\":\"AES256\"}
+          ]
+        }" ; [" ";""]; [¶ ; Char ( 10 ) ]); // because we need valid returns
+    ~base64Policy = BE_Base64_Encode ( ~policy );
+
+        // Step 3: Signing your Request (Making a Signature)
+        ~dateKey = BE_HMAC ( ~shortDate ; "AWS4" & secretKey ; BE_MessageDigestAlgorithm_SHA256 ; BE_Encoding_Base64 );
+        ~dateRegionKey = BE_HMAC ( ~region ; BE_Base64_Decode ( ~dateKey ) ; BE_MessageDigestAlgorithm_SHA256 ; BE_Encoding_Base64 );
+        ~dateRegionServiceKey = BE_HMAC ( ~service ; BE_Base64_Decode ( ~dateRegionKey ) ; BE_MessageDigestAlgorithm_SHA256 ; BE_Encoding_Base64 );
+        ~signingKey = BE_HMAC ( ~requestType ; BE_Base64_Decode ( ~dateRegionServiceKey ); BE_MessageDigestAlgorithm_SHA256 ; BE_Encoding_Base64 );
+
+        ~signature = BE_HMAC ( ~base64Policy ; BE_Base64_Decode ( ~signingKey ) ; BE_MessageDigestAlgorithm_SHA256  );
+$$dateShort = ~shortDate;
+$$region = ~region;
+$$secretKey = secretKey;
+$$dateKey = ~dateKey;
+  $$dateRegionKey = ~dateRegionKey;
+  $$dateRegionServiceKey = ~dateRegionServiceKey;
+  $$signingKey = ~signingKey;
+
+  $$signature = ~signature
+/*
+  $dateKey = hash_hmac('sha256', $shortDate, 'AWS4' . AWS_SECRET, true);
+  $dateRegionKey = hash_hmac('sha256', $region, $dateKey, true);
+  $dateRegionServiceKey = hash_hmac('sha256', $service, $dateRegionKey, true);
+  $signingKey = hash_hmac('sha256', $requestType, $dateRegionServiceKey, true);
+
+  $signature = hash_hmac('sha256', $base64Policy, $signingKey);
+*/
+];
+
+/*
+  List (
+ ~policy;
+    ~signature;
+  )
+
+This function requires the BaseElements plugin in order to
+create the HMAC digest
+*/
+
+
+  Substitute(
+    source ;
+    ["<?=$scriptName?>";"Create Document"];
+    ["<?=$bar_fg?>";"#0B77CB"];
+    ["<?=$bar_bg?>";"#5FB9FF"];
+    ["<?$debug?>"; ""];
+    ["<?$s3FormUrl?>";"https://s3.amazonaws.com/" & bucket & "/"];
+    ["<?$policy?>"; ~base64Policy];
+    ["<?$credential?>";~creds];
+    ["<?$algorithm?>";~algorithm];
+    ["<?$date?>";~datetime];
+    ["<?$expires?>";"86400"];
+    ["<?$signature?>";~signature]
+  )
+
+)
